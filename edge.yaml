@@ -1,0 +1,49 @@
+# mlops-edge-demo 의 Edge 런타임 설정 (geo-mlops-sdk EdgeSettings).
+#
+# 우선순위는 환경변수 > .env > 이 파일 > 기본값. 토큰 같은 비밀값은 여기 쓰지 말고
+# .env 의 GEO_EDGE_CENTRAL__TOKEN 으로 넣는다 (.env.example 참고).
+
+central:
+  # Central API 서버. 웹 UI(https://mlops.unwiki.net)가 아니라 그 UI 가 호출하는 API 주소다.
+  base_url: https://mlops-api-dev.unwiki.net
+  timeout_s: 10
+  verify_tls: true
+
+device:
+  # Edge Fleet 에서 "디바이스 등록" 할 때 입력한 ID 와 맞춘다.
+  id: edge-demo-01
+  location: demo-bench
+
+# 로컬 큐(SQLite)·스풀·Central 에서 받은 모델 캐시. 작업 디렉터리 기준 상대경로.
+data_dir: data/edge
+
+api:
+  # 임베드된 런타임의 로컬 API. `uv run geo-mlops-edge status --config edge.yaml` 이 여기 붙는다.
+  enabled: true
+  host: 127.0.0.1
+  port: 8600
+
+# 데모라서 Fleet 화면에서 바로 보이도록 짧게 잡았다 (실사이트 기본값은 30 s / 25 s).
+# policy_source 가 central(기본)이면 Central 이 내려주는 정책이 이 값을 덮어쓴다.
+heartbeat_interval_s: 10
+commands_poll_s: 25
+
+link:
+  probe_interval_s: 5
+  backoff_max_s: 30
+  online_after_ok: 2
+  offline_after_fail: 2
+
+retention:
+  max_bytes: 1GiB
+  max_age_days: 7
+  free_disk_min_bytes: 1GiB
+
+sync:
+  batch_size: 100
+  cpu_pause_percent: 0
+
+models:
+  keep_versions: 2
+
+log_level: INFO
