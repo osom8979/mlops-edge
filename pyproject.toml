@@ -9,7 +9,8 @@ dependencies = [
     # edge: 임베드 런타임(로컬 큐/하트비트/명령/업로더/로컬 API)
     # gpu:  하트비트에 NVIDIA 사용률 포함 (GPU 가 없으면 None 으로 보고)
     # yolo: Central 에서 배포된 YOLO 모델을 런타임이 직접 로드
-    "geo-mlops-sdk[edge,gpu,yolo]>=0.2.0",
+    # 0.3.0 부터 frames collector 가 SDK 에 내장된다.
+    "geo-mlops-sdk[edge,gpu,yolo]>=0.3.0",
     "opencv-python>=4.8",
 ]
 

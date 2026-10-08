@@ -47,7 +47,7 @@ models:
   keep_versions: 2
 
 collectors:
-  # 재생 중인 프레임을 Central 로 수집한다 (src/mlops_edge_demo/frames.py).
+  # 재생 중인 프레임을 Central 로 수집한다 (geo-mlops-sdk 내장 frames collector).
   # Fleet 화면의 수집기 목록에 이 이름으로 보이고, 오프라인이면 data_dir 에 쌓였다가
   # 재연결 시 청크 업로드된다. 끄려면 enabled: false.
   - type: frames
@@ -65,6 +65,5 @@ collectors:
       labels: true
       # 이 신뢰도 이상인 검출만 사전 라벨로 쓴다 (화면 표시는 --conf 기준).
       label_conf: 0.5
-      jpeg_quality: 90
 
 log_level: INFO

@@ -119,8 +119,9 @@ uv run geo-mlops-edge queue --config edge.yaml --limit 5
 
 ### 1. 프레임 수집
 
-`edge.yaml` 의 `collectors:` 에 선언된 `frames` collector 가 `every_n_frames` 마다 프레임을 JPEG 으로,
+`edge.yaml` 의 `collectors:` 에 선언된 SDK 내장 `frames` collector 가 `every_n_frames` 마다 프레임을 JPEG 으로,
 그 프레임의 검출 결과를 **같은 이름의 LabelMe JSON**(2점 `rectangle`)으로 SDK 큐에 넣습니다.
+인코딩(JPEG 품질 90)만 데모가 하고, 라벨 생성·중복 방지·큐 적재는 SDK 가 합니다.
 업로드는 SDK 가 청크 단위로 하며, 오프라인이면 쌓아 두었다가 재연결 시 이어서 보냅니다.
 
 1. Central 웹 UI → **데이터셋**에서 수집용 데이터셋을 만들고 ID 를 복사합니다.
@@ -134,11 +135,10 @@ uv run geo-mlops-edge queue --config edge.yaml --limit 5
 | `dataset_id` | `""` | 비우면 Central 의 "수집 데이터" 에 따로 쌓입니다. **거기서 데이터셋으로 옮기는 기능은 Central 에 아직 없습니다** |
 | `labels` | `true` | LabelMe 사전 라벨을 함께 올릴지 |
 | `label_conf` | `0.5` | 이 신뢰도 이상인 검출만 사전 라벨로. 신뢰도는 각 shape 의 `description` 에 남깁니다 |
-| `jpeg_quality` | `90` | |
 
 - 파일 이름은 `<영상 이름>_<프레임 번호 6자리>.jpg` / `.json` 입니다. Central 은 같은 stem 으로 이미지와 라벨을 짝짓고,
   YOLO 학습 런타임은 사각형을 `cls cx cy w h` 라벨로 바꿉니다.
-- 반복 재생해도, 다시 실행해도 이미 큐에 넣은 프레임은 다시 올리지 않습니다. 기록은 `data/edge/frames/<collector 이름>.seen` 에 있고,
+- 반복 재생해도, 다시 실행해도 이미 큐에 넣은 프레임은 다시 올리지 않습니다. 기록은 `data/edge/collectors/<collector 이름>.seen` 에 있고,
   이 파일을 지우면 처음부터 다시 수집합니다.
 - 사전 라벨은 지금 모델의 예측입니다. 그대로 학습하면 모델이 자기 오류를 다시 배우므로 **학습 전에 사람이 검수**해야 합니다.
   Central 에는 아직 라벨링 도구가 없습니다.
@@ -171,8 +171,7 @@ src/mlops_edge_demo/
   cli.py                       명령행 인자, 설정 로드, 조립
   video.py                     URL 다운로드 + 캐시 (.part → rename)
   detector.py                  YOLO 추론 → SDK InferenceOutput
-  edge.py                      EdgeRuntime 을 백그라운드 루프에서 실행, 보고·모델 교체 브리지
-  frames.py                    frames collector: 프레임 JPEG + LabelMe 사전 라벨 수집
+  edge.py                      EdgeRuntime 을 백그라운드 루프에서 실행, 보고·프레임 수집·모델 교체 브리지
   player.py                    OpenCV 재생 루프와 HUD
 cache/                         다운로드 캐시 (git 제외)
 data/edge/                     로컬 큐 DB, 스풀, Central 모델 캐시, 수집 기록 (git 제외)

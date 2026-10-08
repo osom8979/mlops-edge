@@ -8,7 +8,7 @@ OpenCV 창(imshow/waitKey)은 메인 스레드를 원하고, EdgeRuntime 은 asy
 
 * Central 등록(register)과 주기적 하트비트 -> Edge Fleet 화면에 디바이스가 보인다
 * 추론 결과를 로컬 SQLite 큐에 쌓고, 링크가 살아 있으면 업로드 (오프라인이면 누적)
-* ``edge.yaml`` 에 선언된 ``frames`` collector 로 프레임과 사전 라벨을 청크 업로드
+* ``edge.yaml`` 에 선언된 SDK 의 ``frames`` collector 로 프레임과 사전 라벨을 청크 업로드
 * 명령 롱폴링: ping / restart / resync / set_policy / pull_model
 * 로컬 API (기본 127.0.0.1:8600) -> ``geo-mlops-edge status`` 로 상태 조회
 """
@@ -23,23 +23,23 @@ import time
 import uuid
 from concurrent.futures import Future
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
 from typing import Any, Coroutine, Optional
 
+import cv2
 import numpy as np
 from geo_mlops_sdk.contracts.inference import InferenceOutput, InferenceRecord, ModelRef
-from geo_mlops_sdk.edge.collectors import register_collector
+from geo_mlops_sdk.edge.collectors.frames import FrameCollector
 from geo_mlops_sdk.edge.daemon import STOP_GRACE_S, ApiStartupError, serve
 from geo_mlops_sdk.edge.events import EdgeEvent
 from geo_mlops_sdk.edge.runtime import EdgeRuntime
 from geo_mlops_sdk.edge.settings import EdgeSettings
 from geo_mlops_sdk.edge.sync import INFERENCE_KIND
 
-from mlops_edge_demo.frames import TYPE as FRAMES_TYPE
-from mlops_edge_demo.frames import FrameCollector, frame_key
-
 logger = logging.getLogger(__name__)
+
+#: 수집 프레임의 JPEG 품질. 인코딩은 SDK 가 아니라 데모가 한다 (SDK 는 bytes 만 받는다).
+JPEG_QUALITY = 90
 
 #: HUD 용 상태 갱신 주기. ``runtime.status()`` 는 모델 캐시 디렉터리까지 훑으므로
 #: 매 프레임 부를 값은 아니다.
@@ -95,14 +95,6 @@ class EdgeAgent:
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
-        # 런타임이 시작하면서 edge.yaml 의 collectors 를 만들므로 그 전에 등록한다.
-        register_collector(
-            FRAMES_TYPE,
-            partial(
-                FrameCollector.from_options,
-                state_dir=self.settings.data_dir / "frames",
-            ),
-        )
         self.runtime = EdgeRuntime(self.settings)
         self.runtime.events.add_listener(self._on_event)
         try:
@@ -188,22 +180,27 @@ class EdgeAgent:
         output: InferenceOutput,
         model: ModelRef,
     ) -> None:
-        """수집 대상 프레임이면 JPEG·라벨로 인코딩해 frames collector 로 넘긴다."""
+        """수집 대상 프레임이면 JPEG 으로 인코딩해 SDK 의 frames collector 로 넘긴다.
+
+        LabelMe 사전 라벨, 중복 방지 장부, 큐 적재는 collector 가 한다. 여기서는
+        비디오 스레드에서 인코딩만 하고, 적재는 런타임 루프에 맡겨 기다리지 않는다.
+        """
         frames = self.frames
-        if frames is None or not frames.wants(source, index, seekable):
+        if frames is None or not frames.wants(source, index, seekable=seekable):
             return
-        try:
-            files = frames.encode(source, index, seekable, frame, output)
-        except ValueError as exc:
-            frames.note_error(str(exc))
+        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if not ok:
+            frames.note_error(f"cannot encode frame {index} of {source}")
             return
-        meta = {
-            "source": Path(source).name,
-            "frame": index,
-            "model": f"{model.name}:{model.version}",
-        }
         self._submit(
-            frames.collect(files, key=frame_key(source, index, seekable), meta=meta)
+            frames.collect(
+                source,
+                index,
+                jpeg.tobytes(),
+                output,
+                model=model,
+                seekable=seekable,
+            )
         )
 
     async def _enqueue(self, record: InferenceRecord) -> None:
