@@ -46,4 +46,25 @@ sync:
 models:
   keep_versions: 2
 
+collectors:
+  # 재생 중인 프레임을 Central 로 수집한다 (src/mlops_edge_demo/frames.py).
+  # Fleet 화면의 수집기 목록에 이 이름으로 보이고, 오프라인이면 data_dir 에 쌓였다가
+  # 재연결 시 청크 업로드된다. 끄려면 enabled: false.
+  - type: frames
+    name: demo-frames
+    # 업로더는 priority 가 높은 것부터 보내고, 보존 정책은 낮은 것부터 지운다.
+    # 추론 결과(50)보다 낮춰 회선이 좁을 때 결과가 먼저 가고 프레임이 먼저 비워지게 한다.
+    priority: 30
+    options:
+      # 30fps 영상에서 초당 1장. 반복 재생 시 이미 올린 프레임은 다시 올리지 않는다.
+      every_n_frames: 30
+      # Central 데이터셋 ID (웹 UI > 데이터셋 > 상세). 주면 그 데이터셋으로 바로 들어가 검증된다.
+      # 비우면 "수집 데이터" 에 따로 쌓이는데, 거기서 데이터셋으로 옮기는 기능은 Central 에 아직 없다.
+      dataset_id: ""
+      # 현재 모델의 검출을 같은 이름의 LabelMe JSON(사각형)으로 함께 올린다. 사람이 검수할 사전 라벨.
+      labels: true
+      # 이 신뢰도 이상인 검출만 사전 라벨로 쓴다 (화면 표시는 --conf 기준).
+      label_conf: 0.5
+      jpeg_quality: 90
+
 log_level: INFO

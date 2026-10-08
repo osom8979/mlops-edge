@@ -8,6 +8,7 @@ OpenCV 창(imshow/waitKey)은 메인 스레드를 원하고, EdgeRuntime 은 asy
 
 * Central 등록(register)과 주기적 하트비트 -> Edge Fleet 화면에 디바이스가 보인다
 * 추론 결과를 로컬 SQLite 큐에 쌓고, 링크가 살아 있으면 업로드 (오프라인이면 누적)
+* ``edge.yaml`` 에 선언된 ``frames`` collector 로 프레임과 사전 라벨을 청크 업로드
 * 명령 롱폴링: ping / restart / resync / set_policy / pull_model
 * 로컬 API (기본 127.0.0.1:8600) -> ``geo-mlops-edge status`` 로 상태 조회
 """
@@ -22,15 +23,21 @@ import time
 import uuid
 from concurrent.futures import Future
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Coroutine, Optional
 
+import numpy as np
 from geo_mlops_sdk.contracts.inference import InferenceOutput, InferenceRecord, ModelRef
+from geo_mlops_sdk.edge.collectors import register_collector
 from geo_mlops_sdk.edge.daemon import STOP_GRACE_S, ApiStartupError, serve
 from geo_mlops_sdk.edge.events import EdgeEvent
 from geo_mlops_sdk.edge.runtime import EdgeRuntime
 from geo_mlops_sdk.edge.settings import EdgeSettings
 from geo_mlops_sdk.edge.sync import INFERENCE_KIND
+
+from mlops_edge_demo.frames import TYPE as FRAMES_TYPE
+from mlops_edge_demo.frames import FrameCollector, frame_key
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,8 @@ class EdgeAgent:
         self.models: queue.Queue[tuple[Path, ModelRef]] = queue.Queue()
         #: Fleet 에서 restart 명령이 오면 설정된다. 재시작은 supervisor 의 몫이다.
         self.restart_requested = threading.Event()
+        #: ``edge.yaml`` 에 ``type: frames`` 가 선언돼 있을 때만 생긴다.
+        self.frames: Optional[FrameCollector] = None
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop: Optional[asyncio.Event] = None
@@ -86,10 +95,19 @@ class EdgeAgent:
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
+        # 런타임이 시작하면서 edge.yaml 의 collectors 를 만들므로 그 전에 등록한다.
+        register_collector(
+            FRAMES_TYPE,
+            partial(
+                FrameCollector.from_options,
+                state_dir=self.settings.data_dir / "frames",
+            ),
+        )
         self.runtime = EdgeRuntime(self.settings)
         self.runtime.events.add_listener(self._on_event)
         try:
             await self.runtime.start()
+            self.frames = self._find_frames()
             self._ready.set()
             if self.settings.api.enabled:
                 try:
@@ -126,6 +144,21 @@ class EdgeAgent:
             return
         self.models.put((model.weights_path, ModelRef(name=name, version=version)))
 
+    def _find_frames(self) -> Optional[FrameCollector]:
+        assert self.runtime is not None
+        found = [c for c in self.runtime.collectors if isinstance(c, FrameCollector)]
+        if not found:
+            logger.info("no frames collector in the config; frames stay on this PC")
+            return None
+        frames = found[0]
+        logger.info(
+            "collecting every %d frames%s into %s",
+            frames.every_n_frames,
+            " with LabelMe pre-labels" if frames.labels else "",
+            f"dataset {frames.dataset_id}" if frames.dataset_id else "collected data",
+        )
+        return frames
+
     # --- called from the video loop ----------------------------------------
 
     def report(
@@ -145,6 +178,33 @@ class EdgeAgent:
             latency_ms=round(latency_ms, 3),
         )
         self._submit(self._enqueue(record))
+
+    def offer_frame(
+        self,
+        source: str,
+        index: int,
+        seekable: bool,
+        frame: np.ndarray,
+        output: InferenceOutput,
+        model: ModelRef,
+    ) -> None:
+        """수집 대상 프레임이면 JPEG·라벨로 인코딩해 frames collector 로 넘긴다."""
+        frames = self.frames
+        if frames is None or not frames.wants(source, index, seekable):
+            return
+        try:
+            files = frames.encode(source, index, seekable, frame, output)
+        except ValueError as exc:
+            frames.note_error(str(exc))
+            return
+        meta = {
+            "source": Path(source).name,
+            "frame": index,
+            "model": f"{model.name}:{model.version}",
+        }
+        self._submit(
+            frames.collect(files, key=frame_key(source, index, seekable), meta=meta)
+        )
 
     async def _enqueue(self, record: InferenceRecord) -> None:
         assert self.runtime is not None

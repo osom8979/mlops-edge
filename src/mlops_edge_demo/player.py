@@ -7,6 +7,7 @@ import queue
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -48,6 +49,8 @@ def run(
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     frame_period = 1.0 / fps
     name = Path(source).name
+    # 파일이면 프레임 위치가 있어 반복 재생해도 같은 프레임을 같은 번호로 가리킨다.
+    seekable = capture.get(cv2.CAP_PROP_FRAME_COUNT) > 0
     logger.info("playing %s at %.1f fps", source, fps)
     if show:
         # Qt 툴바 없이, 비율을 유지한 채 창 크기를 바꿀 수 있게 연다.
@@ -63,6 +66,7 @@ def run(
     fps_meter = 0.0
     last_report = last_log = 0.0
     rewound = False
+    count = 0  # 스트림용: 시작 후 읽은 프레임 수
     try:
         while not agent.restart_requested.is_set():
             started = time.monotonic()
@@ -75,13 +79,17 @@ def run(
                 rewound = True
                 continue
             rewound = False
+            index = int(capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1 if seekable else count
+            count += 1
 
             detector = _swap_model(agent, detector)
             prediction = detector.predict(frame)
+            agent.offer_frame(
+                source, index, seekable, frame, prediction.output, detector.ref
+            )
 
             now = time.monotonic()
             if now - last_report >= report_interval:
-                index = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
                 agent.report(
                     prediction.output,
                     detector.ref,
@@ -91,15 +99,18 @@ def run(
                 last_report = now
 
             status = agent.status()
+            collected = agent.frames.emitted if agent.frames else None
             if now - last_log >= LOG_INTERVAL_S:
                 logger.info(
-                    " | ".join(_summary(detector.ref, prediction, fps_meter, status))
+                    " | ".join(
+                        _summary(detector.ref, prediction, fps_meter, status, collected)
+                    )
                 )
                 last_log = now
 
             if show:
                 image = prediction.annotated
-                _draw_hud(image, detector.ref, prediction, fps_meter, status)
+                _draw_hud(image, detector.ref, prediction, fps_meter, status, collected)
                 cv2.imshow(WINDOW, image)
 
             # 원본 FPS 에 맞춰 재생한다. 추론이 더 느리면 기다리지 않는다.
@@ -153,7 +164,11 @@ def _swap_model(agent: EdgeAgent, detector: Detector) -> Detector:
 
 
 def _summary(
-    ref: ModelRef, prediction: Prediction, fps: float, status: dict
+    ref: ModelRef,
+    prediction: Prediction,
+    fps: float,
+    status: dict,
+    collected: Optional[int],
 ) -> list[str]:
     detections = prediction.output.detections
     counts = Counter(d.name for d in detections)
@@ -167,15 +182,22 @@ def _summary(
     return [
         f"model {ref.name}:{ref.version} {prediction.latency_ms:.1f} ms",
         f"{fps:.1f} fps, {len(detections)} objects ({objects or '-'})",
-        f"central {link} / {registered} / backlog {backlog} / sync {sync}",
+        f"central {link} / {registered} / backlog {backlog} / sync {sync}"
+        + (f" / frames {collected}" if collected is not None else ""),
     ]
 
 
 def _draw_hud(
-    image: np.ndarray, ref: ModelRef, prediction: Prediction, fps: float, status: dict
+    image: np.ndarray,
+    ref: ModelRef,
+    prediction: Prediction,
+    fps: float,
+    status: dict,
+    collected: Optional[int],
 ) -> None:
     device = status.get("device", {}).get("id", "")
-    lines = [f"MLOps Edge Demo  {device}", *_summary(ref, prediction, fps, status)]
+    summary = _summary(ref, prediction, fps, status, collected)
+    lines = [f"MLOps Edge Demo  {device}", *summary]
     link = status.get("link", {}).get("state", "")
 
     font, scale, thickness, line_height = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1, 20
